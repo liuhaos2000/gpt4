@@ -34,7 +34,7 @@ jobs:
 
     - name: Upload artifacts
       if: always()
-      uses: actions/upload-artifact@v2
+      uses: actions/upload-artifact@v3  # 更新到 v3
       with:
         name: executed-notebook
         path: your_notebook.ipynb  # 替换为你的 Notebook 文件名
