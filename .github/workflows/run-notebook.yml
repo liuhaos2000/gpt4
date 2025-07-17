@@ -8,7 +8,7 @@ on:
   pull_request:
     branches:
       - main  # 你可以根据需要更改分支
-
+  workflow_dispatch:  # 添加手动触发器
 jobs:
   run-notebook:
     runs-on: ubuntu-latest
