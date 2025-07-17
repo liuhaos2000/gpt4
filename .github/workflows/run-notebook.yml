@@ -1,39 +1,39 @@
 name: Run Python Script
 
 on:
-push:
-branches:
-- main
-pull_request:
-branches:
-- main
-workflow_dispatch:
-inputs:
-run_script:
-description: 'Run the Python script'
-required: false
-default: 'false'
-type: boolean
+  push:
+    branches:
+      - main
+  pull_request:
+    branches:
+      - main
+  workflow_dispatch:
+    inputs:
+      run_script:
+        description: 'Run the Python script'
+        required: false
+        default: 'false'
+        type: boolean
 
 jobs:
-run-script:
-if: ${{ github.event.inputs.run_script == 'true' || github.event_name != 'workflow_dispatch' }}
-runs-on: ubuntu-latest
+  run-script:
+    if: ${{ github.event.inputs.run_script == 'true' || github.event_name != 'workflow_dispatch' }}
+    runs-on: ubuntu-latest
 
-steps:
-- name: Checkout repository
-  uses: actions/checkout@v3
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v3
 
-- name: Set up Python
-  uses: actions/setup-python@v4
-  with:
-    python-version: '3.11'
+    - name: Set up Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: '3.11'
 
-- name: Install dependencies
-  run: |
-    python -m pip install --upgrade pip
-    pip install yfinance pandas
+    - name: Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install yfinance pandas
 
-- name: Run Python script
-  run: |
-    python scripts/your_script.py
+    - name: Run Python script
+      run: |
+        python scripts/your_script.py
