@@ -135,4 +135,6 @@ if __name__ == "__main__":
                "-BK--","601988.SS","601939.SS",
                "-YOUYUN--","601857.SS","600941.SS","603288.SS","000651.SZ","688047.SS","600809.SS","0728.HK",
                "-US--","TSLA","NVDA","AMD",]
-    run_table(string_list)
+    while True:
+        run_table(string_list)
+        time.sleep(300)
