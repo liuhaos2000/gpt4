@@ -8,9 +8,16 @@ on:
     branches:
       - main
   workflow_dispatch:
+    inputs:
+      run_script:
+        description: 'Run the Python script'
+        required: false
+        default: 'false'
+        type: boolean
 
 jobs:
   run-script:
+    if: ${{ github.event.inputs.run_script == 'true' || github.event_name != 'workflow_dispatch' }}
     runs-on: ubuntu-latest
 
     steps:
