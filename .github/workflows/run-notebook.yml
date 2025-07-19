@@ -54,7 +54,7 @@ jobs:
         source venv/bin/activate
         pip freeze
 
-    - name: Run Python script
+    - name: ■Run Python script
       if: github.event.inputs.run_script == 'true' || (github.event_name == 'push' || github.event_name == 'pull_request')
       run: |
         source venv/bin/activate
