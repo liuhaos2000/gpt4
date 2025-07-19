@@ -1,5 +1,2 @@
-jupyter
-nbconvert
-numpy
 pandas
 yfinance
