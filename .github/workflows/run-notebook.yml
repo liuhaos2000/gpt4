@@ -28,11 +28,16 @@ jobs:
       with:
         python-version: '3.11'
 
+    - name: Create and activate virtual environment
+      run: |
+        python -m venv venv
+        source venv/bin/activate
+
     - name: Cache pip dependencies
-      uses: actions/cache@v3
       id: cache-pip
+      uses: actions/cache@v3
       with:
-        path: ~/.cache/pip
+        path: venv
         key: ${{ runner.os }}-pip-${{ hashFiles('requirements.txt') }}
         restore-keys: |
           ${{ runner.os }}-pip-
@@ -40,9 +45,18 @@ jobs:
     - name: Install dependencies
       if: steps.cache-pip.outputs.cache-hit != 'true'
       run: |
+        source venv/bin/activate
         python -m pip install --upgrade pip
         pip install -r requirements.txt
 
-    - name: Run Python script
+    - name: Verify dependencies
       run: |
+        source venv/bin/activate
+        pip freeze
+
+    - name: Run Python script
+      if: github.event.inputs.run_script == 'true' || (github.event_name == 'push' || github.event_name == 'pull_request')
+      run: |
+        source venv/bin/activate
         python scripts/your_script.py
+      continue-on-error: false  # 如果希望在脚本失败时停止工作流，可以设置为 false
