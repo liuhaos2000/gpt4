@@ -139,6 +139,5 @@ if __name__ == "__main__":
     print(datetime.now())
     run_table(string_list)
 
-    a50 = yf.Ticker("^SHAFTCSI")
-    hist = a50.history(period="1d")
-    print(hist)
+    data = yf.Ticker("^GSPC").history(period="1mo")
+    print(data.head())
