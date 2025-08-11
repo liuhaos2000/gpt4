@@ -138,3 +138,7 @@ if __name__ == "__main__":
                "-US--","TSLA","NVDA","AMD",]
     print(datetime.now())
     run_table(string_list)
+
+    a50 = yf.Ticker("^SHAFTCSI")
+    hist = a50.history(period="1d")
+    print(hist)
