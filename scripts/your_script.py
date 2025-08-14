@@ -87,7 +87,7 @@ def print_stock_info(ticker_symbol):
 def run_test(string_list):
     for cd in string_list:
         if "-" == cd:
-            print("---------------")
+            print("----------------")
         else:
             print_stock_info(cd)
 
