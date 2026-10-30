@@ -3,9 +3,13 @@ from __future__ import annotations
 import datetime as dt
 from typing import Iterable, List
 
-import akshare as ak
-import matplotlib.pyplot as plt
 import pandas as pd
+import yfinance as yf
+
+try:
+    import akshare as ak  # optional fallback for CSI300 constituents only
+except Exception:  # pragma: no cover
+    ak = None
 
 INDEX_CODE = "399300"  # 沪深300
 ETF_CODES = ["510300", "159919", "510330", "510310", "159941"]  # 头部 ETF
@@ -21,7 +25,59 @@ def _pick_col(df: pd.DataFrame, candidates: Iterable[str]) -> str | None:
             return lowered[key]
     return None
 
+
+def _symbol_candidates(code: str) -> List[str]:
+    code = str(code).zfill(6)
+    if code.startswith(("0", "3", "159", "160")):
+        return [f"{code}.SZ", f"{code}.SS"]
+    if code.startswith(("600", "601", "603", "605", "688", "510", "511", "513", "515")):
+        return [f"{code}.SS", f"{code}.SZ"]
+    return [f"{code}.SS", f"{code}.SZ"]
+
+
+def _download_history(code: str, start: str, end: str) -> pd.DataFrame:
+    end_dt = pd.Timestamp(end) + pd.Timedelta(days=1)
+    for symbol in _symbol_candidates(code):
+        try:
+            df = yf.download(
+                symbol,
+                start=start,
+                end=end_dt.strftime("%Y-%m-%d"),
+                auto_adjust=False,
+                actions=False,
+                progress=False,
+                threads=False,
+            )
+            if df is not None and not df.empty:
+                return df.reset_index().rename(columns={"Date": "date"})
+        except Exception:
+            continue
+    raise RuntimeError(f"无法抓取 {code} 的历史行情数据（yfinance）。")
+
+
+def _resolve_shares_outstanding(code: str) -> float:
+    for symbol in _symbol_candidates(code):
+        try:
+            ticker = yf.Ticker(symbol)
+            info = getattr(ticker, "info", {}) or {}
+            shares = info.get("sharesOutstanding") or info.get("floatShares")
+            if shares is not None:
+                return float(shares)
+            fast_info = getattr(ticker, "fast_info", None)
+            shares = getattr(fast_info, "shares", None)
+            if shares is not None:
+                return float(shares)
+        except Exception:
+            continue
+    raise ValueError(f"无法获取 {code} 的流通股数，yfinance 可能未返回该字段。")
+
+
 def get_csi300_component_codes() -> List[str]:
+    if ak is None:
+        raise RuntimeError(
+            "yfinance 不能直接获取沪深300成分股列表。请安装 akshare 作为 fallback，或手动提供成分股 CSV。"
+        )
+
     comp = ak.index_zh_a_component(symbol=INDEX_CODE)
     code_col = _pick_col(comp, ["code", "股票代码", "代码", "symbol"])
     if code_col is None:
@@ -29,24 +85,19 @@ def get_csi300_component_codes() -> List[str]:
     codes = comp[code_col].astype(str).str.replace(".", "", regex=False).str.zfill(6)
     return codes.dropna().tolist()
 
+
 def get_stock_daily_market_cap(code: str, start: str, end: str) -> pd.DataFrame:
-    stock = ak.stock_zh_a_daily(
-        symbol=code,
-        start_date=start.replace("-", ""),
-        end_date=end.replace("-", ""),
-        adjust="hfq",
-    )
-    date_col = _pick_col(stock, ["date", "交易日期", "datetime"])
-    market_col = _pick_col(stock, ["total_market_cap", "总市值", "market_cap", "总市值（元）", "市值"])
+    hist = _download_history(code, start, end)
+    price_col = "Adj Close" if "Adj Close" in hist.columns else "Close"
 
-    if date_col is None or market_col is None:
-        raise ValueError(f"{code} 无法读取总市值字段，可能是 akshare 版本差异。")
-
-    out = stock[[date_col, market_col]].rename(columns={date_col: "date", market_col: "market_cap"})
+    out = hist[["date", price_col]].rename(columns={price_col: "close"})
     out["date"] = pd.to_datetime(out["date"])
-    out["market_cap"] = pd.to_numeric(out["market_cap"], errors="coerce")
+    out["close"] = pd.to_numeric(out["close"], errors="coerce")
+    shares = _resolve_shares_outstanding(code)
+    out["market_cap"] = out["close"] * shares
     out = out.dropna(subset=["market_cap"]).sort_values("date")
-    return out
+    return out[["date", "market_cap"]]
+
 
 def get_csi300_total_market_cap(start: str, end: str) -> pd.DataFrame:
     codes = get_csi300_component_codes()
@@ -59,53 +110,25 @@ def get_csi300_total_market_cap(start: str, end: str) -> pd.DataFrame:
     merged["index_market_cap"] = merged[value_cols].sum(axis=1)
     return merged[["date", "index_market_cap"]].dropna().sort_values("date")
 
+
 def get_etf_daily_close(code: str, start: str, end: str) -> pd.DataFrame:
-    for fetch in [
-        lambda c: ak.fund_etf_hist_em(symbol=c, period="daily", start_date=start.replace("-", ""), end_date=end.replace("-", "")),
-        lambda c: ak.fund_etf_daily(symbol=c, start_date=start.replace("-", ""), end_date=end.replace("-", "")),
-        lambda c: ak.fund_em_etf_hist(symbol=c, start_date=start.replace("-", ""), end_date=end.replace("-", "")),
-    ]:
-        try:
-            df = fetch(code)
-            if df is None or df.empty:
-                continue
-            date_col = _pick_col(df, ["date", "交易日期", "datetime", "日期"])
-            close_col = _pick_col(df, ["close", "收盘", "收盘价", "close_price"])
-            if date_col is None or close_col is None:
-                continue
-            out = df[[date_col, close_col]].rename(columns={date_col: "date", close_col: "close"})
-            out["date"] = pd.to_datetime(out["date"])
-            out["close"] = pd.to_numeric(out["close"], errors="coerce")
-            return out.dropna(subset=["close"]).sort_values("date")
-        except Exception:
-            continue
-    raise RuntimeError(f"无法抓取 ETF {code} 的行情数据，建议检查 akshare 接口或代码。")
+    hist = _download_history(code, start, end)
+    price_col = "Adj Close" if "Adj Close" in hist.columns else "Close"
+
+    out = hist[["date", price_col]].rename(columns={price_col: "close"})
+    out["date"] = pd.to_datetime(out["date"])
+    out["close"] = pd.to_numeric(out["close"], errors="coerce")
+    return out.dropna(subset=["close"]).sort_values("date")
+
 
 def get_etf_total_market_cap(code: str, start: str, end: str) -> pd.DataFrame:
     close_df = get_etf_daily_close(code, start, end)
-
-    info = ak.fund_etf_fund_info()
-    code_col = _pick_col(info, ["fund_code", "基金代码", "code", "代码"])
-    share_col = _pick_col(info, ["fund_share", "总份额", "基金份额", "份额", "share", "total_share", "shares"])
-
-    if code_col is None or share_col is None:
-        raise ValueError("无法识别 ETF 基金信息字段，可能是 akshare 版本不同。")
-
-    subset = info[info[code_col].astype(str).str.contains(code, na=False)]
-    if subset.empty:
-        raise ValueError(f"未找到 ETF {code} 的基金信息。")
-
-    total_shares = pd.to_numeric(subset.iloc[0][share_col], errors="coerce")
-    if pd.isna(total_shares):
-        raise ValueError(f"ETF {code} 的总份额为空。")
-
-    share_value = float(total_shares)
-    if "亿" in str(subset.iloc[0][share_col]):
-        share_value *= 1e8
+    share_value = _resolve_shares_outstanding(code)
 
     out = close_df.rename(columns={"close": "etf_close"})
     out["market_cap"] = out["etf_close"] * share_value
     return out[["date", "market_cap"]].dropna().sort_values("date")
+
 
 def get_head_etf_cap_ratio(start: str = START_DATE, end: str = END_DATE) -> pd.DataFrame:
     index_df = get_csi300_total_market_cap(start, end)
@@ -120,6 +143,7 @@ def get_head_etf_cap_ratio(start: str = START_DATE, end: str = END_DATE) -> pd.D
     ratio_df["ratio_pct"] = ratio_df["etf_market_cap"] / ratio_df["index_market_cap"] * 100
     return ratio_df[["date", "ratio_pct"]].sort_values("date")
 
+
 def plot_ratio(start: str = START_DATE, end: str = END_DATE) -> None:
     ratio_df = get_head_etf_cap_ratio(start=start, end=end)
 
@@ -132,6 +156,7 @@ def plot_ratio(start: str = START_DATE, end: str = END_DATE) -> None:
     plt.tight_layout()
     plt.show()
 
+
 if __name__ == "__main__":
     print("正在获取沪深300及头部 ETF 市值数据...")
     ratio_df = get_head_etf_cap_ratio(start=START_DATE, end=END_DATE)
@@ -139,3 +164,4 @@ if __name__ == "__main__":
     print("\n最近一日占比:")
     print(ratio_df.iloc[-1])
     plot_ratio(start=START_DATE, end=END_DATE)
+
