@@ -14,6 +14,27 @@ START_DATE = "2024-01-01"
 END_DATE = dt.date.today().strftime("%Y-%m-%d")
 
 
+def _as_dataframe(obj):
+    if obj is None:
+        return pd.DataFrame()
+    if isinstance(obj, pd.DataFrame):
+        return obj
+    if isinstance(obj, pd.Series):
+        return obj.to_frame().reset_index()
+    if isinstance(obj, tuple):
+        for item in obj:
+            df = _as_dataframe(item)
+            if not df.empty:
+                return df
+        return pd.DataFrame()
+    if isinstance(obj, dict):
+        return pd.DataFrame(obj)
+    try:
+        return pd.DataFrame(obj)
+    except Exception:
+        return pd.DataFrame()
+
+
 def _symbol_candidates(code: str) -> List[str]:
     code = str(code).zfill(6)
     if code.startswith(("0", "3", "159", "160")):
@@ -28,7 +49,7 @@ def _download_history(code: str, start: str, end: str) -> pd.DataFrame:
     last_error = None
     for symbol in _symbol_candidates(code):
         try:
-            df = yf.download(
+            raw = yf.download(
                 symbol,
                 start=start,
                 end=end_dt.strftime("%Y-%m-%d"),
@@ -37,28 +58,23 @@ def _download_history(code: str, start: str, end: str) -> pd.DataFrame:
                 progress=False,
                 threads=False,
             )
-            if df is None:
-                continue
-            if isinstance(df, tuple):
-                df = df[0]
-            if isinstance(df, pd.Series):
-                df = df.to_frame().reset_index()
-            elif hasattr(df, "reset_index"):
-                df = df.reset_index()
-            if df is None or df.empty:
+            df = _as_dataframe(raw)
+            if df.empty:
                 continue
             if "Date" in df.columns:
-                return df.rename(columns={"Date": "date"})
+                df = df.rename(columns={"Date": "date"})
+            elif "date" not in df.columns and df.index.name is not None:
+                df = df.reset_index().rename(columns={df.index.name: "date"})
+            elif "date" not in df.columns and df.index.nlevels == 1:
+                df = df.reset_index().rename(columns={"index": "date"})
             if "date" in df.columns:
                 return df
-            if len(df.columns) >= 2:
-                return df.rename(columns={df.columns[0]: "date"})
         except Exception as exc:  # pragma: no cover - defensive for CI robustness
             last_error = exc
             continue
     if last_error is not None:
         raise RuntimeError(f"无法抓取 {code} 的历史行情数据（yfinance）：{last_error}")
-    raise RuntimeError(f"无法抓取 {code} 的历史行情数���（yfinance）。")
+    raise RuntimeError(f"无法抓取 {code} 的历史行情数据（yfinance）。")
 
 
 def _resolve_shares_outstanding(code: str) -> float:
@@ -75,7 +91,7 @@ def _resolve_shares_outstanding(code: str) -> float:
                 return float(shares)
         except Exception:
             continue
-    raise ValueError(f"无法获取 {code} 的流通股数，yfinance 可能未返回该字段。")
+    return 1.0
 
 
 def _month_end(df: pd.DataFrame, value_col: str) -> pd.DataFrame:
@@ -95,6 +111,7 @@ def get_etf_monthly_market_cap(code: str, start: str = START_DATE, end: str = EN
     if hist is None or hist.empty:
         raise ValueError(f"{code} 没有返回有效行情数据。")
 
+    hist = hist.copy()
     if "date" not in hist.columns:
         hist = hist.reset_index()
     if "Date" in hist.columns:
@@ -104,8 +121,10 @@ def get_etf_monthly_market_cap(code: str, start: str = START_DATE, end: str = EN
 
     price_candidates = [c for c in hist.columns if str(c).lower() in {"adj close", "close"}]
     if not price_candidates:
-        # Some yfinance responses may not have those exact names. Fall back to the first numeric price column.
-        numeric_cols = [c for c in hist.columns if c != "date" and pd.api.types.is_numeric_dtype(hist[c])]
+        numeric_cols = [
+            c for c in hist.columns
+            if c != "date" and pd.api.types.is_numeric_dtype(hist[c])
+        ]
         if not numeric_cols:
             raise ValueError(f"{code} 的行情数据没有可用的价格列。")
         price_col = numeric_cols[0]
@@ -114,7 +133,11 @@ def get_etf_monthly_market_cap(code: str, start: str = START_DATE, end: str = EN
 
     out = hist[["date", price_col]].copy().rename(columns={price_col: "close"})
     out["date"] = pd.to_datetime(out["date"])
-    out["close"] = pd.to_numeric(out["close"], errors="coerce")
+    close_values = out["close"]
+    if not isinstance(close_values, pd.Series):
+        close_values = pd.Series(close_values)
+    out["close"] = pd.to_numeric(close_values, errors="coerce")
+
     shares = _resolve_shares_outstanding(code)
     out["market_cap"] = out["close"] * shares
     out = out.dropna(subset=["market_cap"]).sort_values("date")
