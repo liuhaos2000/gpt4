@@ -5,6 +5,7 @@ import re
 from typing import Iterable, List
 from urllib.request import Request, urlopen
 
+import matplotlib.pyplot as plt
 import pandas as pd
 import yfinance as yf
 
@@ -246,6 +247,8 @@ def get_head_etf_cap_ratio(start: str = START_DATE, end: str = END_DATE) -> pd.D
 
 def plot_ratio(start: str = START_DATE, end: str = END_DATE) -> None:
     ratio_df = get_head_etf_cap_ratio(start=start, end=end)
+    if ratio_df.empty:
+        raise RuntimeError("未能生成沪深300头部 ETF 市值占比数据，当前数据源返回空结果。")
 
     plt.figure(figsize=(12, 6))
     plt.plot(ratio_df["date"], ratio_df["ratio_pct"], color="royalblue", linewidth=2)
@@ -260,6 +263,8 @@ def plot_ratio(start: str = START_DATE, end: str = END_DATE) -> None:
 if __name__ == "__main__":
     print("正在获取沪深300及头部 ETF 市值数据...")
     ratio_df = get_head_etf_cap_ratio(start=START_DATE, end=END_DATE)
+    if ratio_df.empty:
+        raise RuntimeError("未能生成沪深300头部 ETF 市值占比数据，当前数据源返回空结果。")
     print(ratio_df.head())
     print("\n最近一日占比:")
     print(ratio_df.iloc[-1])
