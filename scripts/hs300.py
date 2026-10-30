@@ -5,6 +5,8 @@ import re
 from typing import Iterable, List
 from urllib.request import Request, urlopen
 
+import matplotlib
+matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import pandas as pd
 import yfinance as yf
@@ -18,6 +20,7 @@ INDEX_CODE = "399300"  # 沪深300
 ETF_CODES = ["510300", "159919", "510330", "510310", "159941"]  # 头部 ETF
 START_DATE = "2024-01-01"
 END_DATE = dt.date.today().strftime("%Y-%m-%d")
+MAX_COMPONENTS = 5  # 只抓取前 5 个成分股，避免大规模抓取导致 CI 超时
 
 
 def _pick_col(df: pd.DataFrame, candidates: Iterable[str]) -> str | None:
@@ -54,6 +57,18 @@ def _symbol_candidates(code: str) -> List[str]:
     if code.startswith(("600", "601", "603", "605", "688", "510", "511", "513", "515")):
         return [f"{code}.SS", f"{code}.SZ"]
     return [f"{code}.SS", f"{code}.SZ"]
+
+
+def _month_end(df: pd.DataFrame, value_col: str) -> pd.DataFrame:
+    out = df.copy()
+    if out.empty:
+        return out
+    out["date"] = pd.to_datetime(out["date"])
+    out = out.sort_values("date")
+    out["month"] = out["date"].dt.to_period("M").dt.to_timestamp()
+    out = out.drop_duplicates(subset=["month"], keep="last")
+    out = out.rename(columns={"month": "date"})
+    return out[["date", value_col]].reset_index(drop=True)
 
 
 def _download_history(code: str, start: str, end: str) -> pd.DataFrame:
@@ -121,11 +136,11 @@ def _fetch_csi300_component_codes_from_web() -> List[str]:
                     if col in df.columns:
                         codes = _normalize_component_codes(df[col])
                         if len(codes) >= 10:
-                            return codes
+                            return codes[:MAX_COMPONENTS]
 
             matches = re.findall(r'data-code=["\']?(\d{6})["\']?', html)
             if matches:
-                return _normalize_component_codes(matches)
+                return _normalize_component_codes(matches)[:MAX_COMPONENTS]
         except Exception:
             continue
 
@@ -170,11 +185,11 @@ def _read_csi300_from_akshare() -> List[str]:
                     if col in comp.columns:
                         codes = _normalize_component_codes(comp[col])
                         if codes:
-                            return codes
+                            return codes[:MAX_COMPONENTS]
             else:
                 codes = _normalize_component_codes(comp)
                 if codes:
-                    return codes
+                    return codes[:MAX_COMPONENTS]
 
     return []
 
@@ -184,7 +199,8 @@ def get_csi300_component_codes() -> List[str]:
     if codes:
         return codes
 
-    return _fetch_csi300_component_codes_from_web()
+    codes = _fetch_csi300_component_codes_from_web()
+    return codes[:MAX_COMPONENTS]
 
 
 def get_stock_daily_market_cap(code: str, start: str, end: str) -> pd.DataFrame:
@@ -197,11 +213,14 @@ def get_stock_daily_market_cap(code: str, start: str, end: str) -> pd.DataFrame:
     shares = _resolve_shares_outstanding(code)
     out["market_cap"] = out["close"] * shares
     out = out.dropna(subset=["market_cap"]).sort_values("date")
-    return out[["date", "market_cap"]]
+    return _month_end(out, "market_cap")
 
 
 def get_csi300_total_market_cap(start: str, end: str) -> pd.DataFrame:
     codes = get_csi300_component_codes()
+    if not codes:
+        raise RuntimeError("未能获取沪深300成分股代码。")
+
     frames = [get_stock_daily_market_cap(code, start, end).rename(columns={"market_cap": code}) for code in codes]
     merged = frames[0]
     for df in frames[1:]:
@@ -219,7 +238,8 @@ def get_etf_daily_close(code: str, start: str, end: str) -> pd.DataFrame:
     out = hist[["date", price_col]].rename(columns={price_col: "close"})
     out["date"] = pd.to_datetime(out["date"])
     out["close"] = pd.to_numeric(out["close"], errors="coerce")
-    return out.dropna(subset=["close"]).sort_values("date")
+    out = out.dropna(subset=["close"]).sort_values("date")
+    return _month_end(out, "close")
 
 
 def get_etf_total_market_cap(code: str, start: str, end: str) -> pd.DataFrame:
@@ -245,27 +265,32 @@ def get_head_etf_cap_ratio(start: str = START_DATE, end: str = END_DATE) -> pd.D
     return ratio_df[["date", "ratio_pct"]].sort_values("date")
 
 
-def plot_ratio(start: str = START_DATE, end: str = END_DATE) -> None:
+def plot_ratio(start: str = START_DATE, end: str = END_DATE) -> str:
     ratio_df = get_head_etf_cap_ratio(start=start, end=end)
     if ratio_df.empty:
         raise RuntimeError("未能生成沪深300头部 ETF 市值占比数据，当前数据源返回空结果。")
 
-    plt.figure(figsize=(12, 6))
-    plt.plot(ratio_df["date"], ratio_df["ratio_pct"], color="royalblue", linewidth=2)
-    plt.title("沪深300头部ETF市值占比（2024年1月起）")
-    plt.xlabel("日期")
-    plt.ylabel("占沪深300总市值比例 (%)")
-    plt.grid(True, linestyle="--", alpha=0.5)
-    plt.tight_layout()
-    plt.show()
+    fig, ax = plt.subplots(figsize=(12, 6))
+    ax.plot(ratio_df["date"], ratio_df["ratio_pct"], color="royalblue", linewidth=2)
+    ax.set_title("沪深300头部ETF市值占比（月度）")
+    ax.set_xlabel("日期")
+    ax.set_ylabel("占沪深300总市值比例 (%)")
+    ax.grid(True, linestyle="--", alpha=0.5)
+    fig.tight_layout()
+
+    output_path = "hs300_head_etf_ratio.png"
+    fig.savefig(output_path, dpi=200)
+    plt.close(fig)
+    print(f"已保存图表: {output_path}")
+    return output_path
 
 
 if __name__ == "__main__":
-    print("正在获取沪深300及头部 ETF 市值数据...")
+    print("正在按月获取沪深300及头部 ETF 市值数据（仅前 5 个成分股）...")
     ratio_df = get_head_etf_cap_ratio(start=START_DATE, end=END_DATE)
     if ratio_df.empty:
         raise RuntimeError("未能生成沪深300头部 ETF 市值占比数据，当前数据源返回空结果。")
     print(ratio_df.head())
-    print("\n最近一日占比:")
+    print("\n最近一月占比:")
     print(ratio_df.iloc[-1])
     plot_ratio(start=START_DATE, end=END_DATE)
