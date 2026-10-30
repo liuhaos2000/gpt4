@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import datetime as dt
+import re
 from typing import Iterable, List
+from urllib.request import Request, urlopen
 
 import pandas as pd
 import yfinance as yf
@@ -24,6 +26,24 @@ def _pick_col(df: pd.DataFrame, candidates: Iterable[str]) -> str | None:
         if key in lowered:
             return lowered[key]
     return None
+
+
+def _normalize_component_codes(raw) -> List[str]:
+    if raw is None:
+        return []
+    if isinstance(raw, pd.Series):
+        series = raw
+    elif isinstance(raw, pd.DataFrame):
+        series = raw.iloc[:, 0]
+    else:
+        series = pd.Series(raw)
+
+    series = series.astype(str)
+    series = series.str.replace(".", "", regex=False)
+    series = series.str.replace(r"[^0-9]", "", regex=True)
+    series = series[series.str.len() >= 6]
+    series = series.astype(str).str.zfill(6)
+    return series.dropna().drop_duplicates().tolist()
 
 
 def _symbol_candidates(code: str) -> List[str]:
@@ -72,18 +92,98 @@ def _resolve_shares_outstanding(code: str) -> float:
     raise ValueError(f"无法获取 {code} 的流通股数，yfinance 可能未返回该字段。")
 
 
-def get_csi300_component_codes() -> List[str]:
-    if ak is None:
-        raise RuntimeError(
-            "yfinance 不能直接获取沪深300成分股列表。请安装 akshare 作为 fallback，或手动提供成分股 CSV。"
-        )
+def _fetch_csi300_component_codes_from_web() -> List[str]:
+    urls = [
+        "https://www.csindex.com.cn/zh-CN/indices/index-detail/399300",
+        "https://www.csindex.com.cn/en/indices/index-detail/399300",
+    ]
+    headers = {"User-Agent": "Mozilla/5.0"}
 
-    comp = ak.index_zh_a_component(symbol=INDEX_CODE)
-    code_col = _pick_col(comp, ["code", "股票代码", "代码", "symbol"])
-    if code_col is None:
-        raise ValueError("无法识别沪深300成分股代码列，请检查 akshare 版本。")
-    codes = comp[code_col].astype(str).str.replace(".", "", regex=False).str.zfill(6)
-    return codes.dropna().tolist()
+    for url in urls:
+        try:
+            req = Request(url, headers=headers)
+            with urlopen(req, timeout=20) as resp:
+                html = resp.read().decode("utf-8", errors="ignore")
+
+            if not html:
+                continue
+
+            try:
+                tables = pd.read_html(html)
+            except Exception:
+                tables = []
+
+            for df in tables:
+                if df.empty:
+                    continue
+                for col in ["code", "股票代码", "代码", "symbol", "证券代码", "代码（A股）"]:
+                    if col in df.columns:
+                        codes = _normalize_component_codes(df[col])
+                        if len(codes) >= 10:
+                            return codes
+
+            matches = re.findall(r'data-code=["\']?(\d{6})["\']?', html)
+            if matches:
+                return _normalize_component_codes(matches)
+        except Exception:
+            continue
+
+    raise RuntimeError("无法从 AkShare 或公开页面获取沪深300成分股列表。")
+
+
+def _read_csi300_from_akshare() -> List[str]:
+    if ak is None:
+        return []
+
+    candidate_names = [
+        "index_zh_a_component",
+        "index_zh_a_cons",
+        "index_zh_a_cons_component",
+        "index_zh_a_component_daily",
+        "index_zh_a_daily",
+    ]
+
+    for name in candidate_names:
+        fn = getattr(ak, name, None)
+        if not callable(fn):
+            continue
+
+        for kwargs in (
+            {"symbol": INDEX_CODE},
+            {"symbol": "000300"},
+            {"index_code": INDEX_CODE},
+            {"code": INDEX_CODE},
+        ):
+            try:
+                comp = fn(**kwargs)
+            except TypeError:
+                continue
+            except Exception:
+                continue
+
+            if comp is None:
+                continue
+
+            if isinstance(comp, pd.DataFrame):
+                for col in ["code", "股票代码", "代码", "symbol", "证券代码", "代码（A股）"]:
+                    if col in comp.columns:
+                        codes = _normalize_component_codes(comp[col])
+                        if codes:
+                            return codes
+            else:
+                codes = _normalize_component_codes(comp)
+                if codes:
+                    return codes
+
+    return []
+
+
+def get_csi300_component_codes() -> List[str]:
+    codes = _read_csi300_from_akshare()
+    if codes:
+        return codes
+
+    return _fetch_csi300_component_codes_from_web()
 
 
 def get_stock_daily_market_cap(code: str, start: str, end: str) -> pd.DataFrame:
@@ -164,4 +264,3 @@ if __name__ == "__main__":
     print("\n最近一日占比:")
     print(ratio_df.iloc[-1])
     plot_ratio(start=START_DATE, end=END_DATE)
-
