@@ -28,3 +28,10 @@ jobs:
           PYTHONUNBUFFERED: "1"
         run: |
           python scripts/hs300.py
+      - name: Upload HS300 chart
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: hs300-chart
+          path: |
+            hs300_head_etf_market_cap.png
