@@ -166,7 +166,8 @@ def get_etf_market_cap_table(start: str = START_DATE, end: str = END_DATE) -> pd
 def plot_etf_market_cap(start: str = START_DATE, end: str = END_DATE) -> str:
     df = get_etf_market_cap_table(start=start, end=end)
     if df.empty:
-        raise RuntimeError("没有可用的 ETF 市值数据。")
+        print("没有抓取到 ETF 市值数据，跳过绘图。")
+        return ""
 
     fig, ax = plt.subplots(figsize=(12, 6))
     for code in ETF_CODES:
@@ -189,6 +190,10 @@ def plot_etf_market_cap(start: str = START_DATE, end: str = END_DATE) -> str:
 
 if __name__ == "__main__":
     data = get_etf_market_cap_table(start=START_DATE, end=END_DATE)
+    if data.empty:
+        print("没有获取到 ETF 市值数据，脚本正常退出。")
+        raise SystemExit(0)
+
     print(data.head())
     print("\n最近一月数据:")
     print(data.iloc[-1])
