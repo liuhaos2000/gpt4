@@ -25,6 +25,7 @@ def _symbol_candidates(code: str) -> List[str]:
 
 def _download_history(code: str, start: str, end: str) -> pd.DataFrame:
     end_dt = pd.Timestamp(end) + pd.Timedelta(days=1)
+    last_error = None
     for symbol in _symbol_candidates(code):
         try:
             df = yf.download(
@@ -36,11 +37,28 @@ def _download_history(code: str, start: str, end: str) -> pd.DataFrame:
                 progress=False,
                 threads=False,
             )
-            if df is not None and not df.empty:
-                return df.reset_index().rename(columns={"Date": "date"})
-        except Exception:
+            if df is None:
+                continue
+            if isinstance(df, tuple):
+                df = df[0]
+            if isinstance(df, pd.Series):
+                df = df.to_frame().reset_index()
+            elif hasattr(df, "reset_index"):
+                df = df.reset_index()
+            if df is None or df.empty:
+                continue
+            if "Date" in df.columns:
+                return df.rename(columns={"Date": "date"})
+            if "date" in df.columns:
+                return df
+            if len(df.columns) >= 2:
+                return df.rename(columns={df.columns[0]: "date"})
+        except Exception as exc:  # pragma: no cover - defensive for CI robustness
+            last_error = exc
             continue
-    raise RuntimeError(f"无法抓取 {code} 的历史行情数据（yfinance）。")
+    if last_error is not None:
+        raise RuntimeError(f"无法抓取 {code} 的历史行情数据（yfinance）：{last_error}")
+    raise RuntimeError(f"无法抓取 {code} 的历史行情数���（yfinance）。")
 
 
 def _resolve_shares_outstanding(code: str) -> float:
@@ -74,9 +92,27 @@ def _month_end(df: pd.DataFrame, value_col: str) -> pd.DataFrame:
 
 def get_etf_monthly_market_cap(code: str, start: str = START_DATE, end: str = END_DATE) -> pd.DataFrame:
     hist = _download_history(code, start, end)
-    price_col = "Adj Close" if "Adj Close" in hist.columns else "Close"
+    if hist is None or hist.empty:
+        raise ValueError(f"{code} 没有返回有效行情数据。")
 
-    out = hist[["date", price_col]].rename(columns={price_col: "close"})
+    if "date" not in hist.columns:
+        hist = hist.reset_index()
+    if "Date" in hist.columns:
+        hist = hist.rename(columns={"Date": "date"})
+    if "date" not in hist.columns:
+        raise ValueError(f"{code} 的行情数据没有 date 列。")
+
+    price_candidates = [c for c in hist.columns if str(c).lower() in {"adj close", "close"}]
+    if not price_candidates:
+        # Some yfinance responses may not have those exact names. Fall back to the first numeric price column.
+        numeric_cols = [c for c in hist.columns if c != "date" and pd.api.types.is_numeric_dtype(hist[c])]
+        if not numeric_cols:
+            raise ValueError(f"{code} 的行情数据没有可用的价格列。")
+        price_col = numeric_cols[0]
+    else:
+        price_col = price_candidates[0]
+
+    out = hist[["date", price_col]].copy().rename(columns={price_col: "close"})
     out["date"] = pd.to_datetime(out["date"])
     out["close"] = pd.to_numeric(out["close"], errors="coerce")
     shares = _resolve_shares_outstanding(code)
@@ -86,10 +122,15 @@ def get_etf_monthly_market_cap(code: str, start: str = START_DATE, end: str = EN
 
 
 def get_etf_market_cap_table(start: str = START_DATE, end: str = END_DATE) -> pd.DataFrame:
-    frames = [
-        get_etf_monthly_market_cap(code, start=start, end=end).rename(columns={"market_cap": code})
-        for code in ETF_CODES
-    ]
+    frames = []
+    for code in ETF_CODES:
+        try:
+            df = get_etf_monthly_market_cap(code, start=start, end=end).rename(columns={"market_cap": code})
+            frames.append(df)
+        except Exception as exc:
+            print(f"跳过 ETF {code}: {exc}")
+            continue
+
     if not frames:
         return pd.DataFrame(columns=["date"])
 
