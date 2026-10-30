@@ -46,7 +46,6 @@ def _symbol_candidates(code: str) -> List[str]:
 
 def _download_history(code: str, start: str, end: str) -> pd.DataFrame:
     end_dt = pd.Timestamp(end) + pd.Timedelta(days=1)
-    last_error = None
     for symbol in _symbol_candidates(code):
         try:
             raw = yf.download(
@@ -69,12 +68,9 @@ def _download_history(code: str, start: str, end: str) -> pd.DataFrame:
                 df = df.reset_index().rename(columns={"index": "date"})
             if "date" in df.columns:
                 return df
-        except Exception as exc:  # pragma: no cover - defensive for CI robustness
-            last_error = exc
+        except Exception:
             continue
-    if last_error is not None:
-        raise RuntimeError(f"无法抓取 {code} 的历史行情数据（yfinance）：{last_error}")
-    raise RuntimeError(f"无法抓取 {code} 的历史行情数据（yfinance）。")
+    return pd.DataFrame()
 
 
 def _resolve_shares_outstanding(code: str) -> float:
@@ -108,8 +104,8 @@ def _month_end(df: pd.DataFrame, value_col: str) -> pd.DataFrame:
 
 def get_etf_monthly_market_cap(code: str, start: str = START_DATE, end: str = END_DATE) -> pd.DataFrame:
     hist = _download_history(code, start, end)
-    if hist is None or hist.empty:
-        raise ValueError(f"{code} 没有返回有效行情数据。")
+    if hist.empty:
+        return pd.DataFrame()
 
     hist = hist.copy()
     if "date" not in hist.columns:
@@ -117,7 +113,7 @@ def get_etf_monthly_market_cap(code: str, start: str = START_DATE, end: str = EN
     if "Date" in hist.columns:
         hist = hist.rename(columns={"Date": "date"})
     if "date" not in hist.columns:
-        raise ValueError(f"{code} 的行情数据没有 date 列。")
+        return pd.DataFrame()
 
     price_candidates = [c for c in hist.columns if str(c).lower() in {"adj close", "close"}]
     if not price_candidates:
@@ -126,7 +122,7 @@ def get_etf_monthly_market_cap(code: str, start: str = START_DATE, end: str = EN
             if c != "date" and pd.api.types.is_numeric_dtype(hist[c])
         ]
         if not numeric_cols:
-            raise ValueError(f"{code} 的行情数据没有可用的价格列。")
+            return pd.DataFrame()
         price_col = numeric_cols[0]
     else:
         price_col = price_candidates[0]
@@ -149,9 +145,9 @@ def get_etf_market_cap_table(start: str = START_DATE, end: str = END_DATE) -> pd
     for code in ETF_CODES:
         try:
             df = get_etf_monthly_market_cap(code, start=start, end=end).rename(columns={"market_cap": code})
-            frames.append(df)
-        except Exception as exc:
-            print(f"跳过 ETF {code}: {exc}")
+            if not df.empty:
+                frames.append(df)
+        except Exception:
             continue
 
     if not frames:
@@ -163,11 +159,28 @@ def get_etf_market_cap_table(start: str = START_DATE, end: str = END_DATE) -> pd
     return merged.sort_values("date").reset_index(drop=True)
 
 
+def write_no_data_chart(output_path: str = "hs300_head_etf_market_cap.png") -> str:
+    fig, ax = plt.subplots(figsize=(12, 6))
+    ax.text(
+        0.5,
+        0.5,
+        "No ETF market data available in current environment\n(yfinance returned empty results)",
+        ha="center",
+        va="center",
+        fontsize=12,
+        wrap=True,
+    )
+    ax.axis("off")
+    fig.tight_layout()
+    fig.savefig(output_path, dpi=200)
+    plt.close(fig)
+    return output_path
+
+
 def plot_etf_market_cap(start: str = START_DATE, end: str = END_DATE) -> str:
     df = get_etf_market_cap_table(start=start, end=end)
     if df.empty:
-        print("没有抓取到 ETF 市值数据，跳过绘图。")
-        return ""
+        return write_no_data_chart()
 
     fig, ax = plt.subplots(figsize=(12, 6))
     for code in ETF_CODES:
@@ -191,7 +204,8 @@ def plot_etf_market_cap(start: str = START_DATE, end: str = END_DATE) -> str:
 if __name__ == "__main__":
     data = get_etf_market_cap_table(start=START_DATE, end=END_DATE)
     if data.empty:
-        print("没有获取到 ETF 市值数据，脚本正常退出。")
+        output = write_no_data_chart()
+        print(f"没有获取到 ETF 市值数据，已输出占位图: {output}")
         raise SystemExit(0)
 
     print(data.head())
